@@ -9,9 +9,15 @@ from plyer import filechooser
 import sqlite3
 import os
 import mimetypes
+import traceback
+import platform
 
-class MainLayout(MDBoxLayout):
-    pass
+# Determine storage path (Android or desktop)
+if platform.system() == "Linux" and "ANDROID_ARGUMENT" in os.environ:
+    from android.storage import app_storage_path
+    STORAGE_PATH = app_storage_path()
+else:
+    STORAGE_PATH = os.getcwd()
 
 class ImageUploadMDApp(MDApp):
     def __init__(self, **kwargs):
@@ -19,9 +25,10 @@ class ImageUploadMDApp(MDApp):
         self.image_display = Image(size_hint_y=1)
         self.selected_file = None
         self.status_label = MDLabel(text="", size_hint_y=None, height=30)
-        self.db_path = os.path.join(os.getcwd(), "kivydata.db")
+        self.db_path = os.path.join(STORAGE_PATH, "kivydata.db")
 
     def build(self):
+        self.theme_cls.primary_palette = "Blue"
         layout = MDBoxLayout(orientation='vertical', padding=20, spacing=20)
 
         # Select Image Button
@@ -60,18 +67,15 @@ class ImageUploadMDApp(MDApp):
             self.cursor = self.conn.cursor()
             self.ensure_table_exists(self.conn, self.cursor)
             print(f"Database initialized at {self.db_path}")
-        except sqlite3.Error as e:
-            print(f"Failed to connect to database: {e}")
-            self.status_label.text = f"Database connection failed: {e}"
+        except Exception as e:
+            print(f"Database error: {e}")
+            traceback.print_exc()
+            self.status_label.text = "Database error"
 
     def ensure_table_exists(self, conn, cursor):
-        try:
-            cursor.execute('''CREATE TABLE IF NOT EXISTS images 
-                            (id INTEGER PRIMARY KEY AUTOINCREMENT, gambar BLOB)''')
-            conn.commit()
-        except sqlite3.Error as e:
-            print(f"Failed to create table: {e}")
-            raise
+        cursor.execute('''CREATE TABLE IF NOT EXISTS images 
+                          (id INTEGER PRIMARY KEY AUTOINCREMENT, gambar BLOB)''')
+        conn.commit()
 
     def select_image(self, instance):
         filechooser.open_file(
@@ -94,52 +98,47 @@ class ImageUploadMDApp(MDApp):
         try:
             conn = sqlite3.connect(self.db_path, check_same_thread=False)
             cursor = conn.cursor()
-            try:
-                self.ensure_table_exists(conn, cursor)
-                cursor.execute("BEGIN TRANSACTION")
-                with open(self.selected_file, "rb") as image_file:
-                    binary_data = sqlite3.Binary(image_file.read())
-                
-                cursor.execute("INSERT INTO images (gambar) VALUES (?)", (binary_data,))
-                conn.commit()
 
-                cursor.execute("SELECT id FROM images ORDER BY id DESC LIMIT 1")
-                last_id = cursor.fetchone()[0]
+            # Insert image into DB
+            with open(self.selected_file, "rb") as image_file:
+                binary_data = sqlite3.Binary(image_file.read())
+            cursor.execute("INSERT INTO images (gambar) VALUES (?)", (binary_data,))
+            conn.commit()
 
-                # Retrieve and display the last image
-                display_cursor = conn.cursor()
-                display_cursor.execute("SELECT gambar FROM images WHERE id = ?", (last_id,))
-                gambar = display_cursor.fetchone()[0]
-                mime_type, _ = mimetypes.guess_type(self.selected_file)
-                image_type = mime_type.split('/')[-1] if mime_type else 'jpg'
-                temp_path = os.path.join(os.getcwd(), f"temp_image_{last_id}.{image_type}")
-                with open(temp_path, "wb") as temp_file:
-                    temp_file.write(gambar)
+            # Get last image inserted
+            cursor.execute("SELECT id FROM images ORDER BY id DESC LIMIT 1")
+            last_id = cursor.fetchone()[0]
 
-                self.image_display.source = temp_path
-                self.image_display.reload()
-                self.status_label.text = "Upload successful!"
+            cursor.execute("SELECT gambar FROM images WHERE id = ?", (last_id,))
+            gambar = cursor.fetchone()[0]
 
-                # Optional cleanup
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
+            mime_type, _ = mimetypes.guess_type(self.selected_file)
+            image_type = mime_type.split('/')[-1] if mime_type else 'jpg'
+            temp_path = os.path.join(STORAGE_PATH, f"temp_image_{last_id}.{image_type}")
 
-            except sqlite3.OperationalError as e:
-                conn.rollback()
-                print(f"Database error: {e}")
-                self.status_label.text = f"Upload failed: {e}"
-            finally:
-                cursor.close()
-                conn.close()
+            with open(temp_path, "wb") as temp_file:
+                temp_file.write(gambar)
+
+            self.image_display.source = temp_path
+            self.image_display.reload()
+            self.status_label.text = "Upload successful!"
+
         except Exception as e:
             print(f"Upload failed: {e}")
-            self.status_label.text = f"Upload failed: {e}"
+            traceback.print_exc()
+            self.status_label.text = "Upload failed"
+        finally:
+            cursor.close()
+            conn.close()
 
     def on_stop(self):
-        if hasattr(self, 'cursor') and self.cursor:
-            self.cursor.close()
-        if hasattr(self, 'conn') and self.conn:
-            self.conn.close()
+        try:
+            if hasattr(self, 'cursor') and self.cursor:
+                self.cursor.close()
+            if hasattr(self, 'conn') and self.conn:
+                self.conn.close()
+        except Exception:
+            pass
 
 if __name__ == '__main__':
     ImageUploadMDApp().run()
